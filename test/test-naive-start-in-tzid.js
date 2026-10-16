@@ -294,6 +294,23 @@ test(`TZ=${process.env.TZ}: die Suche reicht die Haushaltszone herein`, () => {
   assert.equal(hit.start_datetime, FIRST);
 });
 
+test(`TZ=${process.env.TZ}: die Suche stellt ein Vorkommen auf seinen Haushaltstag (#1999)`, () => {
+  setHousehold(BERLIN);
+  // Taeglich 23:30 in Los Angeles. Das erste Vorkommen liegt in Berlin auf dem
+  // naechsten Tag: Haushaltstag 02.10., Ortswanduhr 01.10. 23:30. Das
+  // Suchfenster fuehrt Haushaltstage; wer die Ortswanduhr gegen `from` stellt,
+  // laesst dieses Vorkommen fallen und zeigt den 03.10.
+  const row = {
+    ...rowFor(CASES[1]),
+    id: 1999,
+    start_datetime: wallToUtc('2035-10-01T23:30', LA),
+    end_datetime: wallToUtc('2035-10-01T23:45', LA),
+    recurrence_rule: 'RRULE:FREQ=DAILY;COUNT=5',
+  };
+  const [hit] = resolveEventSearchRows(db, [row], '2035-10-02', '2035-12-31');
+  assert.equal(hit.start_datetime, wallToUtc('2035-10-01T23:30', LA));
+});
+
 test(`TZ=${process.env.TZ}: ein eingelesener EINZELtermin mit tzid geht in deren Wanduhr hinaus`, () => {
   // Zweig 4 gilt nicht nur Serien: auch ein Einzeltermin mit `tzid`, aus dem
   // Formular gespeichert, traegt die Haushaltsziffern.

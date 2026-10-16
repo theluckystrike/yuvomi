@@ -15,7 +15,9 @@ import {
 } from './calendar-events.js';
 import { eventProjectionSql, resolveProjectedEventRows } from './calendar-event-reader.js';
 import { notBirthdayEventSql } from './household-modules.js';
-import { shiftDateKey, todayKey } from '../utils/timezone.js';
+import {
+  hasExplicitZone, householdTimeZone, shiftDateKey, todayKey, utcToWall,
+} from '../utils/timezone.js';
 
 export const SEARCH_LIMIT = 5;
 // Wie viele Termin-Treffer AUFGELOEST werden, bevor die fuenf fruehesten
@@ -326,21 +328,51 @@ export function eventSearchWindow(database) {
 export function resolveEventSearchRows(database, rows, from = null, to = null, options = {}) {
   const recurringIds = rows.filter((row) => row.recurrence_rule).map((row) => row.id);
   const exceptions = loadEventExceptions(database, recurringIds);
-  // Einmal je Aufruf, nicht je Treffer - und nur, wenn ein Treffer sie braucht
-  // (zonenlose Ziffern neben einer `tzid`, #1993).
-  const householdZone = rows.reduce((zone, row) => zone ?? seriesReadingZone(database, row), null);
+  // Einmal je Aufruf, nicht je Treffer. `seriesReadingZone` liefert die Zone
+  // fuer zonenlose Ziffern neben einer `tzid` (#1993); fuer das Fenster braucht
+  // auch ein Vorkommen mit eigener Zone den Haushaltstag (#1999).
+  const householdZone = rows.reduce((zone, row) => zone ?? seriesReadingZone(database, row), null)
+    ?? (rows.some((row) => row.tzid) ? householdTimeZone(database) : null);
   const displayRows = rows.map((row) => {
     if (!row.recurrence_rule || !from || !to) return row;
-    return expandRecurringEvents(
+    /* DAS FENSTER [from, to] SIND HAUSHALTSTAGE, DIE EXPANSION RECHNET AUF DER
+     * WANDUHR DER SERIENZONE (#1999).
+     *
+     * Weicht die `tzid` von der Haushaltszone ab, liegt ein Vorkommen nahe
+     * Mitternacht einen Tag neben seinem Haushaltstag: 01.10. 23:30 in Los
+     * Angeles ist der 02.10. in Berlin. Die Expansion schneidet es an
+     * `currentDate >= from` ab, bevor es entsteht, und die Suche zeigt das
+     * naechste Vorkommen. Deshalb einen Tag breiter expandieren und jedes
+     * Vorkommen auf seinem Haushaltstag gegen das Fenster stellen.
+     */
+    const occurrences = expandRecurringEvents(
       [row],
-      from,
-      to,
+      shiftDateKey(from, -1),
+      shiftDateKey(to, 1),
       exceptions,
       { includeRecurrenceIdentity: true, householdZone },
-    )[0] || row;
+    );
+    return occurrences.find((occurrence) => {
+      const day = occurrenceHouseholdDay(occurrence, row, householdZone);
+      return day >= from && day <= to;
+    }) || row;
   });
   return resolveProjectedEventRows(database, displayRows, options)
     .sort((a, b) => String(a.start_datetime).localeCompare(String(b.start_datetime)));
+}
+
+/**
+ * Der Tag, den ein Vorkommen im Haushalt einnimmt - die Achse, auf der das
+ * Suchfenster [from, to] laeuft (#1999). Ein getimtes Vorkommen mit `tzid`
+ * traegt seinen Zeitpunkt; der wird in die Haushaltszone gedreht. Ganztaegige
+ * und zonenlose Zeilen haben keine zweite Uhr, dort ist der Datumsteil der Tag.
+ */
+function occurrenceHouseholdDay(occurrence, row, householdZone) {
+  const start = String(occurrence.start_datetime ?? '');
+  if (householdZone && row.tzid && !row.all_day && hasExplicitZone(start)) {
+    return utcToWall(start, householdZone)?.date ?? start.slice(0, 10);
+  }
+  return start.slice(0, 10);
 }
 
 /**

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Calendar search finds recurring events on the household's day.** Events near
+  midnight in another time zone no longer skip to the next occurrence when the
+  series day differs from the household day (#1999).
+
 ## [2.77.2] - 2026-10-15
 
 ### Added
